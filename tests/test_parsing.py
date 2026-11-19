@@ -1,3 +1,5 @@
+import pytest
+
 from skypoints.parsing import parse_detail_record
 
 
@@ -21,3 +23,10 @@ def test_parses_detail_record_into_named_fields():
         "dob": "03051985",
         "is_active": "A",
     }
+
+
+def test_rejects_detail_record_with_wrong_field_count():
+    line = "|D|Elena|223457|20101012|20121013|GLD|Sam|CA|USA|90210|03051985|A"
+
+    with pytest.raises(ValueError):
+        parse_detail_record(line)
