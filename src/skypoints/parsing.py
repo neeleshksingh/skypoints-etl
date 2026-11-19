@@ -14,5 +14,9 @@ DETAIL_FIELDS = (
 
 def parse_detail_record(line: str) -> dict:
     """Split a pipe-delimited detail (D) record into named fields."""
-    parts = line.split('|')
-    return dict(zip(DETAIL_FIELDS, parts[2:]))
+    values = line.split('|')[2:]
+    if len(values) != len(DETAIL_FIELDS):
+        raise ValueError(
+            f"Expected {len(DETAIL_FIELDS)} fields, got {len(values)}: {line}"
+        )
+    return dict(zip(DETAIL_FIELDS, values))
