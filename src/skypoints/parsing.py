@@ -1,11 +1,18 @@
+DETAIL_FIELDS = (
+    "member_name",
+    "member_id",
+    "enrollment_date",
+    "last_flight_date",
+    "tier_code",
+    "agent_name",
+    "state",
+    "country",
+    "dob",
+    "is_active",
+)
+
+
 def parse_detail_record(line: str) -> dict:
     """Split a pipe-delimited detail (D) record into named fields."""
     parts = line.split('|')
-
-    record = {
-        "member_name": parts[2],
-        "member_id": parts[3],
-        "dob": parts[10]
-    }
-
-    return record
+    return dict(zip(DETAIL_FIELDS, parts[2:]))
