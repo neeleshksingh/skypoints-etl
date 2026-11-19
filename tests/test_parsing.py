@@ -30,3 +30,10 @@ def test_rejects_detail_record_with_wrong_field_count():
 
     with pytest.raises(ValueError):
         parse_detail_record(line)
+
+
+def test_rejects_line_that_is_not_a_detail_record():
+    line = "|H|Member_Name|Member_Id|Enrollment_Date|Last_Flight_Date|Tier_Code|Agent_Name|State|Country|DOB|Is_Active"
+
+    with pytest.raises(ValueError):
+        parse_detail_record(line)
