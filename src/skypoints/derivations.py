@@ -1,4 +1,7 @@
 from datetime import date
+from typing import Optional
+
+STALE_AFTER_DAYS = 90
 
 
 def calculate_age(dob: date, as_of: date) -> int:
@@ -7,3 +10,10 @@ def calculate_age(dob: date, as_of: date) -> int:
     if (as_of.month, as_of.day) < (dob.month, dob.day):
         age -= 1
     return age
+
+
+def is_stale_member(last_flight_date: Optional[date], as_of: date) -> Optional[bool]:
+    """Stale when the last flight is more than STALE_AFTER_DAYS before as_of; None if unknown."""
+    if last_flight_date is None:
+        return None
+    return (as_of - last_flight_date).days > STALE_AFTER_DAYS
