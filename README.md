@@ -30,6 +30,21 @@ Requires Python 3.9+. No third-party runtime dependencies; `pytest` for tests.
 
     pytest
 
+## Running the SQL (Snowflake)
+
+Run the scripts in `sql/` in numeric order in a Snowflake worksheet with a
+warehouse selected:
+
+1. `01_raw_tables.sql` creates the database, the RAW / STAGING / CORE schemas
+   and the raw landing tables.
+2. Upload the files in `data/samples/` to the stage `SKYPOINTS.RAW.SKYPOINTS_LANDING`.
+3. `02_load_raw.sql` creates the stage and file formats and loads the files.
+
+Expected after step 3: 13 rows in `MEMBER_PROFILE_RAW` (2 headers + 11 detail
+lines) and 3 rows in `REDEMPTION_FEED_RAW`.
+
+> The SQL scripts are written but **not yet verified in Snowflake**.
+
 ## Project structure
 
     src/skypoints/
@@ -40,10 +55,29 @@ Requires Python 3.9+. No third-party runtime dependencies; `pytest` for tests.
         validation.py     Mandatory-field checks (incl. "NULL" text and blanks)
         deduplication.py  "Latest record wins" per member
         routing.py        Group current member records by country
-        redemptions.py    Flatten the JSON redemption feed (in progress)
+        redemptions.py    Flatten the JSON redemption feed, one row per transaction
     tests/                pytest suite — the executable specification of every rule
-    sql/                  Snowflake DDL and set-based transformation scripts (planned)
+    sql/
+        01_raw_tables.sql Layered schemas and raw landing tables
+        02_load_raw.sql   Stage, file formats and COPY INTO loads
     data/samples/         Sample input files used in tests and demos
+
+### Sample data
+
+`MEMBERS_20240101.txt` and the first record of `REDEMPTIONS_20240115.json` copy
+the examples from the assessment PDF. `MEMBERS_20240102.txt` and the extra JSON
+records are hand-made to exercise each known data issue:
+
+| Sample row | What it exercises |
+| --- | --- |
+| Ravi (`223458`) in both member files | Member moves IND → USA; latest record wins |
+| Mike (`223460`) | 7-digit ambiguous date and `NULL` text DOB |
+| Member `223461` | Missing mandatory Member Name |
+| Lena (`223462`) | Unknown country code `XYZ` |
+| Omar (`223463`) | 11 fields instead of 10 |
+| Repeated `RX10091` | Duplicate transaction in the redemption feed |
+| Member `223458` redemptions | Empty redemption list |
+| Member `999999` | Orphan redemption with no matching member |
 
 ## Approach
 
@@ -55,6 +89,16 @@ Requires Python 3.9+. No third-party runtime dependencies; `pytest` for tests.
 - **Single Source of Truth.** One conformed `member_current` table holds the
   latest record per member. Country tables are derived from it, generated from a
   country list rather than hand-written per country.
+- **Raw means as received.** Each member line lands whole in `RAW_LINE` and is
+  split in staging, so a malformed row (wrong field count, wrong record type) is
+  visible to validation instead of being reshaped or dropped at load. The JSON
+  feed lands whole as `VARIANT`.
+- **Lineage on every row.** `SOURCE_FILE_NAME` and `SOURCE_LINE_NUMBER` are
+  captured at load and drive "latest record wins".
+- **Rerunnable.** DDL uses `IF NOT EXISTS`; `COPY INTO` skips files it has already
+  loaded, so a retried job does not duplicate rows.
+- **Production storage.** The demo uses an internal stage. In production the
+  stage would point at Azure Blob Storage; the `COPY` statements stay the same.
 
 Pipeline order:
 
@@ -70,11 +114,11 @@ would test the SQL directly (e.g. dbt tests) and treat the Python as reference.
 
 | # | Deliverable | Status |
 | --- | --- | --- |
-| 1 | DDL for raw, staging and country target tables | Planned (Snowflake) |
+| 1 | DDL for raw, staging and country target tables | Raw tables and load written; staging and targets planned |
 | 2 | Staging with derived `Age` and `Stale_Member` | Rules implemented and tested in Python; SQL planned |
 | 3 | Split into per-country tables, latest record wins | Rules implemented and tested in Python; SQL planned |
-| 4 | Flatten JSON redemption feed and join to members | In progress |
-| 5 | Data validations | Field count, record type, dates, mandatory fields, country codes done; more planned |
+| 4 | Flatten JSON redemption feed and join to members | Flattening implemented and tested in Python; SQL and join planned |
+| 5 | Data validations | Field count, record type, dates, mandatory fields, country codes, duplicate transactions done; more planned |
 | 6 | Live demonstration | Planned |
 
 ## Assumptions
@@ -82,6 +126,7 @@ would test the SQL directly (e.g. dbt tests) and treat the Python as reference.
 | Topic | Decision | Reason |
 | --- | --- | --- |
 | Business key | `Member_ID`, not `Member_Name` | The spec marks Name as key, but names are not unique ("Mike" appears in both the AUS and USA samples). Treated as a documentation error. |
+| File naming | `MEMBERS_YYYYMMDD.txt` and `REDEMPTIONS_YYYYMMDD.json` | The date in the name is the file's business date; the load ignores files that don't match. |
 | "Latest record wins" | Latest by file business date (from filename); line order within the file breaks ties | `Last_Flight_Date` describes the member, not how recent the record is. |
 | Reference date for Age / Stale | A business date passed into the run, not `CURRENT_DATE` | Reruns are reproducible and tests are deterministic. |
 | `Stale_Member` boundary | Stale only when days since flight is **> 90**; exactly 90 is not stale | Follows the spec literally. |
@@ -92,6 +137,7 @@ would test the SQL directly (e.g. dbt tests) and treat the Python as reference.
 | Missing values | Empty, whitespace-only and the literal text `NULL` all count as missing | The AUS sample stores `NULL` as text. |
 | Unknown country codes | Rejected for quarantine, never guessed | A member in the wrong country table is worse than a held record. |
 | Target table naming | `MEMBERS_<ISO alpha-3>` (e.g. `MEMBERS_IND`) rather than `Table_India` | Derived directly from the normalised code; no second name mapping to maintain. |
+| Duplicate transactions | The first occurrence of a `txn_id` within a feed is kept | Resent transactions must not double-count miles. Cross-day duplicates are handled in Snowflake. |
 | Unparseable records | Quarantined with a reason, never guessed | A wrong value is worse than a rejected one. |
 
 ## Known data issues in the samples
@@ -109,7 +155,7 @@ would test the SQL directly (e.g. dbt tests) and treat the Python as reference.
 | 9 | USA sample | Dates stored as numbers, e.g. `1052022`: ambiguous (1/05 or 10/5) | **Implemented:** rejected, cannot be parsed safely |
 | 10 | IND sample | Extra `Individual` column not in spec | Planned: header/schema validation |
 | 11 | IND sample | `3/5/2022`: day/month order ambiguous | **Implemented:** rejected by the strict 8-digit format |
-| 12 | JSON feed | Partner `SkyPoints` is the programme itself; `PENDING` status | Flagged for business clarification; duplicate `txn_id` kept once (in progress) |
+| 12 | JSON feed | Partner `SkyPoints` is the programme itself; `PENDING` status; repeated `txn_id` | **Implemented:** duplicate `txn_id` kept once per feed. Partner and status flagged for business clarification |
 | 13 | Header line | Has the same field count as a detail record | **Implemented:** parser rejects any record type other than `D` |
 
 ## How I used AI
@@ -129,6 +175,9 @@ sure I can explain every line.
   bug. I changed it to the raw source value.
 - **Kept scope tight:** Rejected adding checks that no test required (e.g. a
   digits-only date check) to avoid untested code.
+- **Revised a design:** The first raw table split each line into columns at load.
+  We changed it to land whole lines after realising that column-splitting could
+  silently drop the extra field in an 11-field row.
 
 <!-- Keep adding entries: what you asked, what you accepted, what you rejected and why. -->
 
@@ -136,6 +185,8 @@ sure I can explain every line.
 
 - Should `PENDING` redemptions count towards a member's mileage balance?
 - Is `SkyPoints` a valid partner value in the redemption feed?
+- If a resent transaction differs from the original (e.g. `PENDING` then
+  `COMPLETED`), which version is correct?
 - What is the date format convention for each country's source system? (The AUS
   sheet uses `YYYY-MM-DD`, which the compact 8-digit parser would reject.)
 - Is a short Member ID such as `2256` valid, or truncated upstream?
