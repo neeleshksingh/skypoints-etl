@@ -31,6 +31,14 @@ Requires Python 3.9+. No third-party runtime dependencies; `pytest` for tests.
 
     pytest
 
+## Running the Python pipeline
+
+    PYTHONPATH=src python3 -m skypoints.pipeline
+
+Reads the member files in `data/samples/`, prints current members by country and
+the quarantined records with their reasons. The result matches the Snowflake
+output for the same files.
+
 ## Running the SQL (Snowflake)
 
 Run in a Snowflake worksheet with a warehouse selected, in this order:
