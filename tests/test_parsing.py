@@ -37,3 +37,9 @@ def test_rejects_line_that_is_not_a_detail_record():
 
     with pytest.raises(ValueError):
         parse_detail_record(line)
+
+
+@pytest.mark.parametrize("line", ["", "no delimiters here"])
+def test_rejects_line_without_record_structure(line):
+    with pytest.raises(ValueError):
+        parse_detail_record(line)
