@@ -57,3 +57,25 @@ def test_blank_optional_date_is_missing_not_an_error(blank):
     assert record["dob"] is None
     assert record["enrollment_date"] == date(2022, 5, 11)
     assert reasons == []
+
+@pytest.mark.parametrize(
+    "column, reason",
+    [
+        ("ID", "MISSING_SOURCE_ID"),
+        ("Name", "MISSING_MEMBER_NAME"),
+        ("EnrollmentDate", "MISSING_ENROLLMENT_DATE"),
+    ],
+)
+def test_blank_mandatory_field_is_reported_as_missing(column, reason):
+    row = {**USA_ROW, column: ""}
+
+    _, reasons = standardise_row("USA", row)
+
+    assert reasons == [reason]
+
+
+def test_row_with_unexpected_layout_is_rejected_with_a_clear_error():
+    row = {column: value for column, value in USA_ROW.items() if column != "ID"}
+
+    with pytest.raises(ValueError, match=r"missing \['ID'\]"):
+        standardise_row("USA", row)
