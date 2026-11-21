@@ -49,14 +49,14 @@ typed AS (
         m.ISO_ALPHA3                                                                                AS COUNTRY
     FROM fields f
     LEFT JOIN COUNTRY_CODE_MAP m ON m.SOURCE_CODE = f.COUNTRY_RAW
-    WHERE f.RECORD_TYPE <> 'H'   -- headers are expected in every file; they are not member data
+    WHERE f.RECORD_TYPE IS DISTINCT FROM 'H'   -- headers are expected in every file; they are not member data
 ),
 checked AS (
     SELECT
         t.*,
         ARRAY_CONSTRUCT_COMPACT(
-            IFF(FIELD_COUNT <> 10,                                       'WRONG_FIELD_COUNT', NULL),
-            IFF(RECORD_TYPE <> 'D',                                      'UNEXPECTED_RECORD_TYPE', NULL),
+            IFF(FIELD_COUNT IS DISTINCT FROM 10,                         'WRONG_FIELD_COUNT', NULL),
+            IFF(RECORD_TYPE IS DISTINCT FROM 'D',                        'UNEXPECTED_RECORD_TYPE', NULL),
             IFF(MEMBER_NAME IS NULL,                                     'MISSING_MEMBER_NAME', NULL),
             IFF(MEMBER_ID IS NULL,                                       'MISSING_MEMBER_ID', NULL),
             IFF(ENROLLMENT_DATE_RAW IS NULL,                             'MISSING_ENROLLMENT_DATE', NULL),

@@ -63,7 +63,7 @@ SELECT 'RAW_TO_STAGING_RECONCILE', 'ERROR', NULL,
        'raw ' || raw_count::VARCHAR || ' vs staging ' || stg_count::VARCHAR
 FROM (
     SELECT
-        (SELECT COUNT(*) FROM SKYPOINTS.RAW.MEMBER_PROFILE_RAW WHERE SPLIT_PART(RAW_LINE, '|', 2) <> 'H') AS raw_count,
+        (SELECT COUNT(*) FROM SKYPOINTS.RAW.MEMBER_PROFILE_RAW WHERE SPLIT_PART(RAW_LINE, '|', 2) IS DISTINCT FROM 'H') AS raw_count,
         (SELECT COUNT(*) FROM SKYPOINTS.STAGING.MEMBER_PROFILE_STG)                                         AS stg_count
 )
 WHERE raw_count <> stg_count
