@@ -29,6 +29,11 @@ def _candidate_readings(text: str) -> list:
                 readings += [(year, int(first), int(second)), (year, int(second), int(first))]
         return readings
 
+    iso = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if iso:
+        year, month, day = (int(part) for part in iso.groups())
+        return [(year, month, day)]
+
     raise ValueError(f"Unrecognised date format: {text!r}")
 
 
