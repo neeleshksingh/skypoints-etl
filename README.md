@@ -184,8 +184,8 @@ the record untrustworthy.
   captured at load and drive "latest record wins".
 - **Rerunnable and deterministic.** DDL uses `IF NOT EXISTS` / `CREATE OR
   REPLACE`; `COPY INTO` skips files it has already loaded, so a retried job does
-  not duplicate rows; every ranking has a final tie-breaker, so the same input
-  always gives the same output.
+  not duplicate rows; the SQL ranking has a final tie-breaker (file name), so the
+  same input always gives the same output.
 
 Pipeline order:
 
@@ -309,6 +309,7 @@ proven by breaking the data on purpose:
 | Target table naming | `MEMBERS_<ISO alpha-3>` (e.g. `MEMBERS_IND`) rather than `Table_India` | Derived directly from the normalised code; no second name mapping to maintain. |
 | Short member IDs | Warning when shorter than 6 characters | Threshold taken from the sample, where full IDs have 6 digits; to be confirmed by the business. |
 | Duplicate transactions | First occurrence of a `txn_id` is kept: within a feed in Python, across all feeds in Snowflake; resends are reported as `RESENT_TXN_ID` | Resent transactions must not double-count miles, but the business should still see that they happened. |
+| Invalid redemptions | Reported in `DQ_ISSUES` (`INVALID_REDEMPTION`), not yet excluded from `REDEMPTION_STG` | Reporting first lets the business see the scale of the problem before rows are withheld; in production, invalid transactions would be quarantined from downstream outputs. |
 | Members with no redemptions | Produce no redemption rows | `LATERAL FLATTEN ... OUTER => TRUE` would list them if the business wants that. |
 | Unparseable records | Quarantined with a reason, never guessed | A wrong value is worse than a rejected one. |
 
