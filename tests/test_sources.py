@@ -1,4 +1,6 @@
-from datetime import date
+from datetime import date, datetime
+
+import pytest
 
 from skypoints.sources import standardise_row
 
@@ -25,3 +27,33 @@ def test_same_source_id_in_two_countries_gives_two_different_members():
 
     assert usa["member_key"] == "USA-1"
     assert aus["member_key"] == "AUS-1"
+
+def test_ambiguous_dates_become_reasons_instead_of_guesses():
+    john = {"ID": "2", "Name": "John", "TierCode": "SLV", "EnrollmentDate": "1052022", "FlightDate": "1152022"}
+
+    record, reasons = standardise_row("USA", john)
+
+    assert reasons == ["AMBIGUOUS_ENROLLMENT_DATE", "AMBIGUOUS_LAST_FLIGHT_DATE"]
+    assert record["enrollment_date"] is None
+
+
+def test_impossible_date_becomes_invalid_reason():
+    jonnathan = {"Unique ID": 2, "Member Name": "Jonnathan", "Tier Type": "GLD",
+                 "Date of Birth": datetime(1997, 12, 13), "Date of Enrollment": "2021-13-13",
+                 "Date of Flight": datetime(2022, 1, 5)}
+
+    _, reasons = standardise_row("AUS", jonnathan)
+
+    assert reasons == ["INVALID_ENROLLMENT_DATE"]
+
+
+@pytest.mark.parametrize("blank", ["NULL", "", None])
+def test_blank_optional_date_is_missing_not_an_error(blank):
+    mike = {"Unique ID": 1, "Member Name": "Mike", "Tier Type": "PLT", "Date of Birth": blank,
+            "Date of Enrollment": datetime(2022, 5, 11), "Date of Flight": datetime(2022, 8, 1)}
+
+    record, reasons = standardise_row("AUS", mike)
+
+    assert record["dob"] is None
+    assert record["enrollment_date"] == date(2022, 5, 11)
+    assert reasons == []
