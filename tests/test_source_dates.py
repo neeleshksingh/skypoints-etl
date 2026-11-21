@@ -44,3 +44,13 @@ def test_accepts_digit_date_with_only_one_possible_reading(text, expected):
 def test_rejects_digit_date_with_lost_leading_zero_and_two_readings(text):
     with pytest.raises(AmbiguousDateError):
         parse_unambiguous_date(text)
+
+
+def test_accepts_iso_date_text():
+    assert parse_unambiguous_date("2022-05-11") == date(2022, 5, 11)
+
+
+def test_rejects_impossible_iso_date_as_invalid_not_ambiguous():
+    with pytest.raises(ValueError, match="Not a valid date") as error:
+        parse_unambiguous_date("2021-13-13")
+    assert not isinstance(error.value, AmbiguousDateError)
