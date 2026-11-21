@@ -36,6 +36,11 @@ SOURCE_COLUMNS = {
 }
 
 DATE_FIELDS = ("dob", "enrollment_date", "last_flight_date")
+MANDATORY_FIELDS = ("source_id", "member_name", "enrollment_date")
+
+
+def _is_missing(value) -> bool:
+    return value is None or is_blank(str(value))
 
 
 def read_source_date(value):
@@ -44,7 +49,7 @@ def read_source_date(value):
         return value.date()
     if isinstance(value, date):
         return value
-    if value is None or is_blank(str(value)):
+    if _is_missing(value):
         return None
     return parse_unambiguous_date(str(value))
 
@@ -52,11 +57,19 @@ def read_source_date(value):
 def standardise_row(country: str, row: dict) -> tuple:
     """Rename one source row's columns to standard fields; return it with the reasons it can't be trusted."""
     columns = SOURCE_COLUMNS[country]
+    missing_columns = sorted(set(columns) - set(row))
+    unexpected_columns = sorted(set(row) - set(columns))
+    if missing_columns or unexpected_columns:
+        raise ValueError(
+            f"{country} row does not match the expected layout: "
+            f"missing {missing_columns}, unexpected {unexpected_columns}"
+        )
+
     record = {columns[name]: value for name, value in row.items()}
     record["country"] = country
     record["member_key"] = f"{country}-{record['source_id']}"
 
-    reasons = []
+    reasons = [f"MISSING_{field.upper()}" for field in MANDATORY_FIELDS if _is_missing(record[field])]
     for field in DATE_FIELDS:
         if field not in record:
             continue
