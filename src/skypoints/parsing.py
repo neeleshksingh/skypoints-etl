@@ -15,8 +15,8 @@ DETAIL_FIELDS = (
 def parse_detail_record(line: str) -> dict:
     """Split a pipe-delimited detail (D) record into named fields."""
     parts = line.split('|')
-    if parts[1] != "D":
-        raise ValueError(f"Expected a detail (D) record: {line}")
+    if len(parts) < 2 or parts[1] != "D":
+        raise ValueError(f"Expected a detail (D) record: {line!r}")
 
     values = parts[2:]
     if len(values) != len(DETAIL_FIELDS):
