@@ -26,3 +26,21 @@ def test_rejects_slashed_date_with_two_possible_readings(text):
 def test_rejects_slashed_date_with_no_valid_reading():
     with pytest.raises(ValueError):
         parse_unambiguous_date("13/13/2022")
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("6152022", date(2022, 6, 15)),
+        ("8202022", date(2022, 8, 20)),
+        ("12282021", date(2021, 12, 28)),
+    ],
+)
+def test_accepts_digit_date_with_only_one_possible_reading(text, expected):
+    assert parse_unambiguous_date(text) == expected
+
+
+@pytest.mark.parametrize("text", ["1052022", "1152022"])
+def test_rejects_digit_date_with_lost_leading_zero_and_two_readings(text):
+    with pytest.raises(AmbiguousDateError):
+        parse_unambiguous_date(text)
