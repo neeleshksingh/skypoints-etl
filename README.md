@@ -82,7 +82,7 @@ Run in a Snowflake worksheet with a warehouse selected, in this order:
 | 5 | Run `03_staging.sql` | `MEMBER_PROFILE_STG`: 10 rows, 6 VALID and 4 REJECTED |
 | 6 | Run `04_core_country_split.sql` | `MEMBER_CURRENT`: 5 members (AUS 1, CAN 1, PHL 1, USA 2); `MEMBERS_IND`: 0 rows |
 | 7 | Run `05_redemptions.sql` | `REDEMPTION_STG`: 3 transactions; `MEMBER_REDEMPTIONS`: 2 rows |
-| 8 | Run `06_data_quality.sql` | `DQ_ISSUES`: REJECTED_RECORD 5, ORPHAN_REDEMPTION 1, PARTNER_IS_PROGRAMME 1, SHORT_MEMBER_ID 2 |
+| 8 | Run `06_data_quality.sql` | `DQ_ISSUES`: REJECTED_RECORD 5, ORPHAN_REDEMPTION 1, PARTNER_IS_PROGRAMME 1, RESENT_TXN_ID 1, SHORT_MEMBER_ID 2 |
 
 Running step 2 twice is intentional and safe: `IF NOT EXISTS` makes the DDL a
 no-op the second time, and `COPY INTO` skips files it has already loaded.
@@ -130,7 +130,8 @@ Committed exactly as received. Each file has its own layout:
 | `member_type` | — | — | Individual or Corporate |
 
 The mapping lives in one dictionary (`SOURCE_COLUMNS`), so a new country needs a
-new entry, not new code.
+new entry, not new code. A file whose columns don't match its layout is rejected
+with an error naming the missing and unexpected columns.
 
 ### Sample data
 
@@ -146,7 +147,7 @@ format:
 | Member `223461` | Missing mandatory Member Name | Rejected: `MISSING_MEMBER_NAME` |
 | Lena (`223462`) | Unknown country code `XYZ` | Rejected: `UNKNOWN_COUNTRY` |
 | Omar (`223463`) | 11 fields instead of 10 | Rejected: `WRONG_FIELD_COUNT`, `INVALID_DOB` |
-| Repeated `RX10091` | Duplicate transaction | Kept once |
+| Repeated `RX10091` | Resent transaction | Kept once; reported as `RESENT_TXN_ID` |
 | Member `223458` redemptions | Empty redemption list | No rows |
 | Member `999999` | Orphan redemption | Excluded from the join; reported as `ORPHAN_REDEMPTION` |
 
@@ -175,13 +176,16 @@ the record untrustworthy.
   a reason, not resolved by assumption.
 - **Nothing is silently dropped.** Rejected records stay in staging with their
   raw line and every rejection reason; the quarantine is
-  `WHERE DQ_STATUS = 'REJECTED'`.
+  `WHERE DQ_STATUS = 'REJECTED'`. Filters use `IS DISTINCT FROM` so a `NULL`
+  value can never make a row disappear.
 - **One bad record never stops a run.** Every rejection raises `ValueError` (or a
   subclass), which the pipeline turns into a quarantine reason.
 - **Lineage on every row.** `SOURCE_FILE_NAME` and `SOURCE_LINE_NUMBER` are
   captured at load and drive "latest record wins".
-- **Rerunnable.** DDL uses `IF NOT EXISTS` / `CREATE OR REPLACE`; `COPY INTO`
-  skips files it has already loaded, so a retried job does not duplicate rows.
+- **Rerunnable and deterministic.** DDL uses `IF NOT EXISTS` / `CREATE OR
+  REPLACE`; `COPY INTO` skips files it has already loaded, so a retried job does
+  not duplicate rows; every ranking has a final tie-breaker, so the same input
+  always gives the same output.
 
 Pipeline order:
 
@@ -197,8 +201,9 @@ exactly once, to their current country.
 | Malformed pipe record | One reason, `MALFORMED_RECORD`; the parser stops at the first structural problem | Separate `WRONG_FIELD_COUNT` / `UNEXPECTED_RECORD_TYPE`, and later columns are still evaluated |
 | Field length check | Not implemented | `FIELD_TOO_LONG` |
 | Missing country | Reported as `UNKNOWN_COUNTRY` | Separate `MISSING_COUNTRY` |
+| Whitespace around values | Kept as received in the pipe feed | Trimmed in staging |
 | Provided CSV/Excel files | Read and validated (`sources.py`) | Not loaded; see production considerations |
-| Redemption join and orphan check | Flattening only (`redemptions.py`), not part of `pipeline.py` | Flatten, cross-feed dedupe, join and `ORPHAN_REDEMPTION` |
+| Redemption join and checks | Flattening only (`redemptions.py`), not part of `pipeline.py` | Flatten, cross-feed dedupe, join, `ORPHAN_REDEMPTION`, `RESENT_TXN_ID`, `INVALID_REDEMPTION` |
 | Cross-layer reconciliation | Not applicable | `RAW_TO_STAGING_RECONCILE`, `COUNTRY_TABLES_RECONCILE` |
 
 Both reject the same records on the sample data; they differ only in how finely
@@ -233,7 +238,7 @@ would test the SQL directly (e.g. dbt tests) and treat the Python as reference.
 | 2 | Staging with derived `Age` and `Stale_Member` | Done: tested in Python, verified in Snowflake (`03`) |
 | 3 | Split into per-country tables, latest record wins | Done: tested in Python, verified in Snowflake (`04`) |
 | 4 | Flatten JSON redemption feed and join to members | Done: flattening tested in Python; flatten and join verified in Snowflake (`05`) |
-| 5 | Data validations | Done: rule checks, key uniqueness, orphans and layer reconciliation in Snowflake (`06`); provided country files validated in Python (`sources.py`) |
+| 5 | Data validations | Done: rule checks, key uniqueness, redemption checks, orphans and layer reconciliation in Snowflake (`06`); provided country files validated in Python (`sources.py`) |
 | 6 | Live demonstration | In preparation |
 
 ## Data quality checks
@@ -246,7 +251,9 @@ the same columns for every check. **ERROR** means the record is held back;
 | --- | --- | --- |
 | `REJECTED_RECORD` | ERROR | Every staging rule failure, one row per reason, with file and line |
 | `DUPLICATE_MEMBER_ID` | ERROR | More than one row per member in `MEMBER_CURRENT` |
-| `DUPLICATE_TXN_ID` | ERROR | A transaction counted more than once |
+| `DUPLICATE_TXN_ID` | ERROR | A transaction held more than once in staging (guards the dedupe) |
+| `RESENT_TXN_ID` | WARNING | The same transaction received more than once; staging keeps the first copy |
+| `INVALID_REDEMPTION` | ERROR | A transaction with a missing ID or status, an invalid date, or miles that are not a positive number; checked on the raw feed so dedupe cannot hide it |
 | `ORPHAN_REDEMPTION` | WARNING | A redemption for a member we don't have |
 | `SHORT_MEMBER_ID` | WARNING | Member ID shorter than 6 characters (possibly truncated) |
 | `FLIGHT_BEFORE_ENROLLMENT` | WARNING | Last flight before enrollment |
@@ -260,14 +267,20 @@ Staging rule reasons: `WRONG_FIELD_COUNT`, `UNEXPECTED_RECORD_TYPE`,
 `INVALID_ENROLLMENT_DATE`, `INVALID_LAST_FLIGHT_DATE`, `INVALID_DOB`,
 `UNKNOWN_COUNTRY`, `MISSING_COUNTRY`, `FIELD_TOO_LONG`.
 
-Provided-file reasons: `AMBIGUOUS_<FIELD>` (the text is a valid date under more
-than one reading) and `INVALID_<FIELD>` (no valid reading, or an unrecognised
-format).
+Provided-file reasons: `MISSING_<FIELD>` (source ID, member name or enrollment
+date is blank), `AMBIGUOUS_<FIELD>` (the text is a valid date under more than one
+reading) and `INVALID_<FIELD>` (no valid reading, or an unrecognised format).
 
-The reconciliation checks produce a row only when something is wrong. To prove
-they are not silently broken, `COUNTRY_TABLES_RECONCILE` was tested by deleting
-a row from `MEMBERS_USA`: the check reported `country tables 4 vs
-MEMBER_CURRENT 5`, and cleared after the tables were rebuilt.
+Checks produce a row only when something is wrong, so an empty result could mean
+"passing" or "broken". Each check that stays silent on the sample data was
+proven by breaking the data on purpose:
+
+- `COUNTRY_TABLES_RECONCILE`: deleting a row from `MEMBERS_USA` reported
+  `country tables 4 vs MEMBER_CURRENT 5`, and cleared after the tables were rebuilt.
+- NULL-safe staging: an empty raw line and a line without delimiters were both
+  kept and rejected with `WRONG_FIELD_COUNT` and `UNEXPECTED_RECORD_TYPE`.
+- `INVALID_REDEMPTION`: a transaction with no ID, an impossible date, negative
+  miles and no status was reported with all four problems.
 
 ## Assumptions
 
@@ -276,8 +289,9 @@ MEMBER_CURRENT 5`, and cleared after the tables were rebuilt.
 | Business key (pipe feed) | `Member_ID`, not `Member_Name` | The spec marks Name as key, but names are not unique (two different members called Mike exist in the provided files). Treated as a documentation error and listed as an open question. |
 | Business key (provided files) | Country + source ID (e.g. `AUS-1`) | Each file numbers its members from 1, so the same ID belongs to different people in different countries. |
 | Country of a provided file | Taken from the file name (`AUS.xlsx` → `AUS`) | None of the files has a country column. |
+| Mandatory fields (provided files) | Source ID, member name and enrollment date | The same fields the spec marks as mandatory, with the file's ID standing in for Member ID. |
 | File naming (pipe feed) | `MEMBERS_YYYYMMDD.txt` and `REDEMPTIONS_YYYYMMDD.json` | The date in the name is the file's business date; the load ignores files that don't match. |
-| "Latest record wins" | Latest by file business date (from filename); line order within the file breaks ties | `Last_Flight_Date` describes the member, not how recent the record is. |
+| "Latest record wins" | Latest by file business date (from filename); line order within the file breaks ties; file name is the final tie-breaker in SQL | `Last_Flight_Date` describes the member, not how recent the record is. The final tie-breaker keeps the result deterministic. |
 | Rejected latest record | Only VALID records are ranked; a rejected newer record waits in quarantine | The member keeps their last known good state instead of disappearing from every country table. |
 | Reference date for Age / Stale | A business date passed into the run, not `CURRENT_DATE` | Reruns are reproducible and tests are deterministic. |
 | `Stale_Member` boundary | Stale only when days since flight is **> 90**; exactly 90 is not stale | Follows the spec literally. Verified: Omar's flight is exactly 90 days before the business date and shows `FALSE`. |
@@ -294,7 +308,7 @@ MEMBER_CURRENT 5`, and cleared after the tables were rebuilt.
 | Missing country | Rejected with `MISSING_COUNTRY` in SQL, although Country is optional in the spec | A member without a country cannot be routed to a country table. |
 | Target table naming | `MEMBERS_<ISO alpha-3>` (e.g. `MEMBERS_IND`) rather than `Table_India` | Derived directly from the normalised code; no second name mapping to maintain. |
 | Short member IDs | Warning when shorter than 6 characters | Threshold taken from the sample, where full IDs have 6 digits; to be confirmed by the business. |
-| Duplicate transactions | First occurrence of a `txn_id` is kept: within a feed in Python, across all feeds in Snowflake | Resent transactions must not double-count miles. |
+| Duplicate transactions | First occurrence of a `txn_id` is kept: within a feed in Python, across all feeds in Snowflake; resends are reported as `RESENT_TXN_ID` | Resent transactions must not double-count miles, but the business should still see that they happened. |
 | Members with no redemptions | Produce no redemption rows | `LATERAL FLATTEN ... OUTER => TRUE` would list them if the business wants that. |
 | Unparseable records | Quarantined with a reason, never guessed | A wrong value is worse than a rejected one. |
 
@@ -313,10 +327,10 @@ MEMBER_CURRENT 5`, and cleared after the tables were rebuilt.
 | 9 | `USA.csv` | Dates stored as numbers with the leading zero lost. `6152022` and `8202022` have one valid reading; `1052022` has four (Jan 5, Oct 5, May 1, May 10) and `1152022` three | **Implemented:** unambiguous values recovered; ambiguous ones quarantined as `AMBIGUOUS_*`. No DOB column |
 | 10 | `IND.csv` | Extra `Individual or Corporate` column; different column order | **Implemented:** mapped to `member_type` by the per-country column map |
 | 11 | `IND.csv` | Text dates without leading zeros: `12/1/1998`, `3/5/2022` and `3/10/2022` are valid both day-first and month-first | **Implemented:** quarantined as `AMBIGUOUS_*`; unambiguous ones such as `8/13/1982` accepted |
-| 12 | All provided files | Different column names per file; no country column; IDs `1`–`3` repeated in every country | **Implemented:** per-country column map, country from file name, key = country + source ID |
-| 13 | JSON feed | Partner `SkyPoints` is the programme itself; `PENDING` status; repeated `txn_id` | **Implemented:** duplicate `txn_id` kept once; `PARTNER_IS_PROGRAMME` warning. `PENDING` flagged for business clarification |
+| 12 | All provided files | Different column names per file; no country column; IDs `1`–`3` repeated in every country | **Implemented:** per-country column map, country from file name, key = country + source ID; blank mandatory fields reported as `MISSING_*`; unexpected layouts rejected |
+| 13 | JSON feed | Partner `SkyPoints` is the programme itself; `PENDING` status; repeated `txn_id` | **Implemented:** duplicate `txn_id` kept once and reported as `RESENT_TXN_ID`; `PARTNER_IS_PROGRAMME` warning. `PENDING` flagged for business clarification |
 | 14 | Header line | Has the same field count as a detail record | **Implemented:** never treated as a member (Python rejects it; SQL filters it) |
-| 15 | Any input file | Blank lines or lines without delimiters | **Implemented:** rejected as malformed instead of crashing the run |
+| 15 | Any input file | Blank lines or lines without delimiters | **Implemented:** rejected as malformed in Python instead of crashing; kept and rejected in SQL (`IS DISTINCT FROM`, so a `NULL` record type is never silently filtered out) |
 
 ## How I used AI
 
@@ -337,14 +351,15 @@ verified and could explain.
 - **Changed a design when the evidence required it.** The first raw table split
   each line into columns at load. I changed it to land whole lines after seeing
   that column-splitting could silently drop the extra field in an 11-field row.
-- **Tested the tests.** The reconciliation checks returned no rows, which could
-  mean "passing" or "broken". I deleted a row from `MEMBERS_USA` on purpose,
-  confirmed `COUNTRY_TABLES_RECONCILE` reported the mismatch, then rebuilt the
-  tables and confirmed it cleared.
+- **Tested the tests.** Checks that return no rows could be passing or broken, so
+  I broke the data on purpose for each one (see Data quality checks) and confirmed
+  it reported the problem, then restored the data and confirmed it cleared.
 - **Used AI as a critical reviewer.** I asked a second AI to review the
   repository as a sceptical interviewer would. It found an edge case where a
-  blank line raised an uncaught `IndexError`; I reproduced it with a failing test,
-  fixed it, and acted on its other findings.
+  blank line raised an uncaught `IndexError`, blank mandatory fields being
+  accepted in the provided files, and a SQL `NULL` comparison that could silently
+  drop malformed rows. I reproduced each one with a failing test or a deliberately
+  broken row before fixing it.
 
 <!-- Keep adding entries: what you asked, what you accepted, what you rejected and why. -->
 
